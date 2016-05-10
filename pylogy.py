@@ -116,6 +116,8 @@ class LiteralArg(Arg):
 
         return result
 
+LiteralTerm = LiteralArg
+VarTerm = VarArg
 
 class Rule(object):
     def __init__(self, args, terms=None):
@@ -198,9 +200,9 @@ class Pred(object):
         # TODO: allow passing existing contructed Rule ?
         self.rules.append(Rule(rule_args, rule_terms))
 
-    def possibles(self, args, context):
+    def possibles(self, args):
         for rule in self.rules:
-            for result in rule.possibles(args, context):
+            for result in rule.possibles(args):
                 yield result
 
 # Example...
@@ -266,7 +268,7 @@ def build_from_spec(spec, class_type_name, classes):
     return result
 
 def term(spec):
-    return build_from_spec(spec, 'term', [VarArg, ComplexTerm, LiteralArg])
+    return build_from_spec(spec, 'term', [VarTerm, ComplexTerm, LiteralTerm])
 
 def arg(spec):
     return build_from_spec(spec, 'arg', [VarArg, ListConsArg, LiteralArg])
@@ -303,10 +305,10 @@ p_inlist.add(('X', Cons('Y', 'L')),
 p_uniq = Pred('uniq')
 p_uniq.add(([]),
            [])
-p_uniq.add((Cons('X', 'L')),
+p_uniq.add((Cons('X', 'L'),),
            [Not(Call(p_inlist, ['X', 'L'])),
             Call(p_uniq, ['L'])])
 
 debug = True
-for result_context in p_uniq.possibles([[1, 2, 1, 3]]):
+for result_context in p_uniq.possibles([[1, 2, 3]]):
     print 'result : ', result_context
