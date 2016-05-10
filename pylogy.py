@@ -3,13 +3,12 @@ debug = True
 class Term(object):
     pass # abstract
 
-class Literal(object):
-    def __init__(self, value):
-        self.value = value
-
-class Var(object):
-    def __init__(self, name):
-        self.name = name
+#class LiteralTerm(Term):
+#    def __init__(self, value):
+#        self.value = value
+#class VarTerm(Term):
+#    def __init__(self, name):
+#        self.name = name
 
 class Arg(object):
     def __init__(self, spec):
@@ -25,10 +24,15 @@ class VarArg(Arg):
         return self.spec
 
     @staticmethod
-    def spec_is(spec):
+    def from_spec(spec):
         # A variable spec is a VarArg or an uppercase string.
-        return (isinstance(spec, VarArg) or
-                isinstance(spec, basestring) and spec[0] == spec[0].upper())
+        if isinstance(spec, VarArg):
+            result = spec
+        elif isinstance(spec, basestring) and spec[0] == spec[0].upper():
+            result = VarArg(spec)
+        else:
+            result = None
+        return result
 
     def match(self, term):
         result = None
@@ -46,20 +50,24 @@ class VarArg(Arg):
         return '<VarArg "{!s}">'.format(self.name)
 
 
-class ListArg(Arg):
-    def __init__(self, spec):
-        assert len(spec) == 2
-        self.head = arg(spec[0])
-        self.tail = arg(spec[1])
+class ListConsArg(Arg):
+    def __init__(self, head, tail):
+        self.head = arg(head)
+        self.tail = arg(tail)
 
     @staticmethod
-    def spec_is(spec):
-        # A split-list spec is a ListArg or a pair.
-        return (isinstance(spec, VarArg) or 
-                isinstance(spec, tuple) and len(spec) == 2)
+    def from_spec(spec):
+        # A split-list spec is a ListConsArg or a pair.
+        if isinstance(spec, VarArg):
+            result = spec
+        elif isinstance(spec, tuple) and len(spec) == 2:
+            result = ListConsArg(*spec)
+        else:
+            result = None
+        return result
 
     def __str__(self):
-        return '<ListArg [{!s}|{!s}]>'.format(self.head, self.tail)
+        return '<ListConsArg [{!s}|{!s}]>'.format(self.head, self.tail)
 
     def match(self, term):
         result = None
@@ -83,9 +91,15 @@ class LiteralArg(Arg):
         return self.spec
 
     @staticmethod
-    def spec_is(spec):
+    def from_spec(spec):
         # A literal spec is anything not a List-splitter or VarArg (for now).
-        return not VarArg.spec_is(spec) and not ListArg.spec_is(spec)
+        if isinstance(spec, LiteralArg):
+            result = spec
+        elif not VarArg.from_spec(spec) and not ListConsArg.from_spec(spec):
+            result = LiteralArg(spec)
+        else:
+            result = None
+        return result
 
     def __str__(self):
         return '<LiteralArg {!r}>'.format(self.value)
@@ -102,19 +116,13 @@ class LiteralArg(Arg):
 
         return result
 
-print arg(1.2)
-print arg('xyz')
-print arg('Xyz')
-print arg(('head', 'Tail'))
-
-
 
 class Rule(object):
     def __init__(self, args, terms=None):
-        self.args = [arg(this) for this in args]
+        args = args or []
         terms = terms or []
+        self.args = [arg(this) for this in args]
         self.terms = [term(this) for this in terms]
-
 
     def args_match_context(self, args):
         result = {}
@@ -158,7 +166,16 @@ class FalseTerm(Term):
 class ComplexTerm(Term):
     def __init__(self, pred, arg_specs):
         self.pred = pred
-        self.arg_specs = [arg(spec) for spec in specs]
+        self.arg_specs = [arg(spec) for spec in arg_specs]
+
+    @staticmethod
+    def from_spec(spec):
+        # A complex term spec is a tuple (pred, args).
+        if isinstance(spec, ComplexTerm):
+            result = spec
+        else:
+            result = None
+        return result
 
     def possibles(self, args, context):
         call_context = context.copy()
@@ -177,8 +194,9 @@ class Pred(object):
         self.name = name
         self.rules = rules or []
 
-    def add(self, rule):
-        self.rules.append(rule)
+    def add(self, rule_args, rule_terms=None):
+        # TODO: allow passing existing contructed Rule ?
+        self.rules.append(Rule(rule_args, rule_terms))
 
     def possibles(self, args, context):
         for rule in self.rules:
@@ -199,6 +217,9 @@ class Fail(Pred):
     def __init__(self, args):
         self.args = []
 
+    def add(self, rule):
+        raise NotImplementedError()
+
     def possibles(self, args, context):
         # A generator that stops immediately.
         if 0:
@@ -208,6 +229,9 @@ class Succeed(Pred):
     # Use as Call(Succeed, [])
     def __init__(self, args):
         self.args = []
+
+    def add(self, rule):
+        raise NotImplementedError()
 
     def possibles(self, args, context):
         # A generator that succeeds once unconditionally.
@@ -238,14 +262,23 @@ def build_from_spec(spec, class_type_name, classes):
             break
     if result is None:
         raise valueError('unexpected {} spec : "{!s}"'.format(
-            class_type_name, spec)
+            class_type_name, spec))
     return result
 
 def term(spec):
-    return build_from_spec(spec, 'term', [VarTerm, CallTerm, LiteralTerm])
+    return build_from_spec(spec, 'term', [VarArg, ComplexTerm, LiteralArg])
 
 def arg(spec):
-    return build_from_spec(spec, 'arg', [VarArg, ConsArg, LiteralArg])
+    return build_from_spec(spec, 'arg', [VarArg, ListConsArg, LiteralArg])
+
+
+print arg(1.2)
+print arg('xyz')
+print arg('Xyz')
+print arg(('head', 'Tail'))
+
+
+
 
 # Example...
 # inlist(X, []) :- !, fail.
@@ -256,14 +289,16 @@ def arg(spec):
 #
 # ? uniq([1, 2, 1, 3])
 
+Call = ComplexTerm
+Cons = ListConsArg
 
 p_inlist = Pred('inlist')
 p_inlist.add(('X', []),
-             [Call(Fail)])
-p_inlist.add(('X',Cons('X', 'L')),
+             [Call(Fail, [])])
+p_inlist.add(('X', Cons('X', 'L')),
              [])  # or [Call(True, [])]
 p_inlist.add(('X', Cons('Y', 'L')),
-             [Call(p_inlist, 'X', 'L')])
+             [Call(p_inlist, ['X', 'L'])])
 
 p_uniq = Pred('uniq')
 p_uniq.add(([]),
