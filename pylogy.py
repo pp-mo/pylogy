@@ -1,7 +1,14 @@
 debug = True
 
+def prn(str, indent):
+    return ' ' * indent + str
+
+
 class Term(object):
     pass # abstract
+
+    def __repr__(self):
+        return str(self)
 
 #class LiteralTerm(Term):
 #    def __init__(self, value):
@@ -17,6 +24,9 @@ class Arg(object):
     @staticmethod
     def spec_is(spec):
         raise ValueError('fails on parent class')
+
+    def __repr__(self):
+        return str(self)
 
 class VarArg(Arg):
     @property
@@ -119,6 +129,10 @@ class LiteralArg(Arg):
 LiteralTerm = LiteralArg
 VarTerm = VarArg
 
+def db(ind, str):
+    if debug:
+        print ' ' * ind + str
+
 class Rule(object):
     def __init__(self, args, terms=None):
         args = args or []
@@ -136,22 +150,39 @@ class Rule(object):
             result.update(match)
         return result
 
-    def possibles(self, args=None):
+    def possibles(self, args=None, ind=0):
+        db(ind, '?TRY {}'.format(self))
         args_context = self.args_match_context(args)
-        if args_context is not None:
+        if args_context is None:
+            db(ind, '\NoRuleMatch')
+        else:
             # satisfy rules recursively in turn ...
-            for result in self._satisfy_terms(self.terms, args_context):
+            for result in self._satisfy_terms(self.terms, args_context, ind+2):
+                db('={}'.format(result))
                 yield result
+            db('\EndTerms')
 
-    def _satisfy_terms(self, terms, context):
+    def _satisfy_terms(self, terms, context, ind=0):
         if len(terms) == 0:
             # No remaining terms: good to go.
+            db(ind, '\NoTerms')
+            db(ind, '=term={}'.format(context))
             yield context
         else:
             this_term, rest_terms = terms[0], terms[1:]
+            db(ind+2, 'Term {}'.format(this_term))
             for one_possible in this_term.possibles(context):
-                for result in self._satisfy_terms(rest_terms, one_possible):
+                db(ind+4, '\term_possible={}'.format(one_possible))
+                for result in self._satisfy_terms(rest_terms, one_possible, ind+6):
+                    db(ind+4, '\term_result={}'.format(result))
                     yield result
+            db(ind+2, '\EndTerms')
+
+    def __str__(self):
+        str_args = ', '.join(str(arg) for arg in self.args)
+        str_terms = ', '.join(str(term) for arg in self.terms)
+        return '<Rule({}): {}>'.format(str_args, str_terms)
+
 
 class Term(object):
     pass
@@ -160,10 +191,17 @@ class TrueTerm(Term):
     def possibles(self, context):
         yield context
 
+    def __str__(self):
+        return '<TrueTerm>'
+
 class FalseTerm(Term):
     def possibles(self, context):
         if 0:
             yield [1]
+
+    def __str__(self):
+        return '<FalseTerm>'
+
 
 class ComplexTerm(Term):
     def __init__(self, pred, arg_specs):
@@ -191,6 +229,11 @@ class ComplexTerm(Term):
         for result in self.pred.possibles(call_context):
             yield result
 
+    def __str__(self):
+        str_args = ', '.join(str(arg) for arg in self.arg_specs)
+        return '<Call {}({})>'.format(self.pred.name, str_args)
+
+
 class Pred(object):
     def __init__(self, name, rules=None):
         self.name = name
@@ -204,6 +247,10 @@ class Pred(object):
         for rule in self.rules:
             for result in rule.possibles(args):
                 yield result
+
+    def __str__(self):
+        str_rules = ', \n  '.join(str(rule) for arg in self.rules)
+        return '<Pred {}({})>'.format(self.pred.name, str_args)
 
 # Example...
 # inlist(X, []) :- !, fail.
@@ -256,10 +303,17 @@ class Not(Pred):
         if not inner_succeeded:
             yield context
 
+    def __str__(self):
+        str_rules = ', \n  '.join(str(rule) for arg in self.rules)
+        return '<PredNOT({})>'.format(self.pred)
+
 
 def build_from_spec(spec, class_type_name, classes):
     for type in classes:
-        result = type.from_spec(spec)
+        if isinstance(spec, type):
+            result = spec
+        else:
+            result = type.from_spec(spec)
         if result is not None:
             break
     if result is None:
@@ -303,7 +357,7 @@ p_inlist.add(('X', Cons('Y', 'L')),
              [Call(p_inlist, ['X', 'L'])])
 
 p_uniq = Pred('uniq')
-p_uniq.add(([]),
+p_uniq.add(([],),
            [])
 p_uniq.add((Cons('X', 'L'),),
            [Not(Call(p_inlist, ['X', 'L'])),
