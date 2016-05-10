@@ -310,5 +310,8 @@ p_uniq.add((Cons('X', 'L'),),
             Call(p_uniq, ['L'])])
 
 debug = True
-for result_context in p_uniq.possibles([[1, 2, 3]]):
-    print 'result : ', result_context
+for test_list in [[1, 2, 3], [1, 2, 1]]:
+    print 'test {}'.format(test_list)
+    test_args = [arg(test_list)]
+    for result_context in p_uniq.possibles(test_args):
+        print '   result : ', result_context
