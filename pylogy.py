@@ -1,21 +1,9 @@
 debug = True
 
-def prn(str, indent):
-    return ' ' * indent + str
+def db(ind, str):
+    if debug:
+        print ' ' * ind + str
 
-
-class Term(object):
-    pass # abstract
-
-    def __repr__(self):
-        return str(self)
-
-#class LiteralTerm(Term):
-#    def __init__(self, value):
-#        self.value = value
-#class VarTerm(Term):
-#    def __init__(self, name):
-#        self.name = name
 
 class Arg(object):
     def __init__(self, spec):
@@ -33,13 +21,13 @@ class VarArg(Arg):
     def name(self):
         return self.spec
 
-    @staticmethod
-    def from_spec(spec):
+    @classmethod
+    def from_spec(cls, spec):
         # A variable spec is a VarArg or an uppercase string.
-        if isinstance(spec, VarArg):
+        if isinstance(spec, cls):
             result = spec
         elif isinstance(spec, basestring) and spec[0] == spec[0].upper():
-            result = VarArg(spec)
+            result = cls(spec)
         else:
             result = None
         return result
@@ -62,16 +50,16 @@ class VarArg(Arg):
 
 class ListConsArg(Arg):
     def __init__(self, head, tail):
-        self.head = arg(head)
-        self.tail = arg(tail)
+        self.head = make_arg(head)
+        self.tail = make_arg(tail)
 
-    @staticmethod
-    def from_spec(spec):
+    @classmethod
+    def from_spec(cls, spec):
         # A split-list spec is a ListConsArg or a pair.
-        if isinstance(spec, VarArg):
+        if isinstance(spec, cls):
             result = spec
         elif isinstance(spec, tuple) and len(spec) == 2:
-            result = ListConsArg(*spec)
+            result = cls(*spec)
         else:
             result = None
         return result
@@ -84,8 +72,9 @@ class ListConsArg(Arg):
         if isinstance(term, LiteralTerm):
             value = term.value
             if isinstance(value, list):
-                head, tail = value[0], value[1:]
-                result = self.head.match(head).update(self.tail.match(tail))
+                head, tail = make_term(value[0]), make_term(value[1:])
+                result = self.head.match(head)
+                result.update(self.tail.match(tail))
 #        elif isinstance(term, VarTerm):
 #            # We don't match vars to vars (not automatically).
 #            pass
@@ -100,13 +89,13 @@ class LiteralArg(Arg):
     def value(self):
         return self.spec
 
-    @staticmethod
-    def from_spec(spec):
+    @classmethod
+    def from_spec(cls, spec):
         # A literal spec is anything not a List-splitter or VarArg (for now).
-        if isinstance(spec, LiteralArg):
+        if isinstance(spec, cls):
             result = spec
         elif not VarArg.from_spec(spec) and not ListConsArg.from_spec(spec):
-            result = LiteralArg(spec)
+            result = cls(spec)
         else:
             result = None
         return result
@@ -126,19 +115,13 @@ class LiteralArg(Arg):
 
         return result
 
-LiteralTerm = LiteralArg
-VarTerm = VarArg
-
-def db(ind, str):
-    if debug:
-        print ' ' * ind + str
 
 class Rule(object):
     def __init__(self, args, terms=None):
         args = args or []
         terms = terms or []
-        self.args = [arg(this) for this in args]
-        self.terms = [term(this) for this in terms]
+        self.args = [make_arg(this) for this in args]
+        self.terms = [make_term(this) for this in terms]
 
     def args_match_context(self, args):
         result = {}
@@ -180,12 +163,25 @@ class Rule(object):
 
     def __str__(self):
         str_args = ', '.join(str(arg) for arg in self.args)
-        str_terms = ', '.join(str(term) for arg in self.terms)
+        str_terms = ', '.join(str(term) for term in self.terms)
         return '<Rule({}): {}>'.format(str_args, str_terms)
 
 
 class Term(object):
-    pass
+    pass # abstract
+
+    def __repr__(self):
+        return str(self)
+
+class LiteralTerm(LiteralArg):
+    # Functionally equivalent, for now.
+    def __str__(self):
+        return '<LiteralTerm "{!s}">'.format(self.value)
+
+class VarTerm(VarArg):
+    # Functionally equivalent, for now.
+    def __str__(self):
+        return '<VarTerm "{!s}">'.format(self.name)
 
 class TrueTerm(Term):
     def possibles(self, context):
@@ -206,12 +202,12 @@ class FalseTerm(Term):
 class ComplexTerm(Term):
     def __init__(self, pred, arg_specs):
         self.pred = pred
-        self.arg_specs = [arg(spec) for spec in arg_specs]
+        self.arg_specs = [make_arg(spec) for spec in arg_specs]
 
-    @staticmethod
-    def from_spec(spec):
+    @classmethod
+    def from_spec(cls, spec):
         # A complex term spec is a tuple (pred, args).
-        if isinstance(spec, ComplexTerm):
+        if isinstance(spec, cls):
             result = spec
         else:
             result = None
@@ -249,7 +245,7 @@ class Pred(object):
                 yield result
 
     def __str__(self):
-        str_rules = ', \n  '.join(str(rule) for arg in self.rules)
+        str_rules = ', \n  '.join(str(rule) for rule in self.rules)
         return '<Pred {}({})>'.format(self.pred.name, str_args)
 
 # Example...
@@ -265,6 +261,7 @@ class Fail(Pred):
     # Use as Call(Fail, [])
     def __init__(self, args):
         self.args = []
+        self.rules = []
 
     def add(self, rule):
         raise NotImplementedError()
@@ -278,6 +275,7 @@ class Succeed(Pred):
     # Use as Call(Succeed, [])
     def __init__(self, args):
         self.args = []
+        self.rules = []
 
     def add(self, rule):
         raise NotImplementedError()
@@ -291,6 +289,7 @@ class Not(Pred):
     # A predicate that succeeds once, unconditionally, iff the argument fails.
     def __init__(self, contained_predicate):
         self.pred = contained_predicate
+        self.rules = []
 
     def possibles(self, args, context):
         inner_succeeded = False
@@ -304,7 +303,7 @@ class Not(Pred):
             yield context
 
     def __str__(self):
-        str_rules = ', \n  '.join(str(rule) for arg in self.rules)
+        str_rules = ', \n  '.join(str(rule) for rule in self.rules)
         return '<PredNOT({})>'.format(self.pred)
 
 
@@ -321,17 +320,17 @@ def build_from_spec(spec, class_type_name, classes):
             class_type_name, spec))
     return result
 
-def term(spec):
+def make_term(spec):
     return build_from_spec(spec, 'term', [VarTerm, ComplexTerm, LiteralTerm])
 
-def arg(spec):
+def make_arg(spec):
     return build_from_spec(spec, 'arg', [VarArg, ListConsArg, LiteralArg])
 
 
-print arg(1.2)
-print arg('xyz')
-print arg('Xyz')
-print arg(('head', 'Tail'))
+print make_arg(1.2)
+print make_arg('xyz')
+print make_arg('Xyz')
+print make_arg(('head', 'Tail'))
 
 
 
@@ -366,6 +365,6 @@ p_uniq.add((Cons('X', 'L'),),
 debug = True
 for test_list in [[1, 2, 3], [1, 2, 1]]:
     print 'test {}'.format(test_list)
-    test_args = [arg(test_list)]
+    test_args = [make_term(test_list)]
     for result_context in p_uniq.possibles(test_args):
         print '   result : ', result_context
