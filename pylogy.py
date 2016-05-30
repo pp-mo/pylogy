@@ -18,7 +18,7 @@ class ArgOrTerm():
 
     @classmethod
     def is_valid_spec(cls, spec):
-        raise ValueError('fails on parent class')
+        raise NotImplementedError()
 
     def __repr__(self):
         return str(self)
@@ -27,6 +27,15 @@ class ArgOrTerm():
 class Arg(ArgOrTerm):
     def __init__(self, spec):
         self.spec = spec
+
+    def match_term(self, term, caller_vars, local_vars):
+        # Match a formal arg to a call argument term, updating dictionaries of
+        # local vars and caller vars.
+        raise NotImplementedError()
+
+
+class TermMatchFail(Exception):
+    pass
 
 
 class VarArg(Arg):
@@ -53,6 +62,35 @@ class VarArg(Arg):
         else:
             raise ValueError("can't bind VarArg to unrecognised type of term ?")
 
+        return result
+
+    def match_term(self, term, caller_vars, local_vars):
+        result = True
+        if self.name in local_vars:
+            var = local_vars_dict[name]
+        else:
+            var = VarTerm(name)
+            local_vars_dict[name] = var
+        
+        if isinstance(term, LiteralTerm):
+            if var.value is None:
+                var.value = term
+            else:
+                result = var.values == term.value
+        elif isinstance(term, VarTerm):
+            if term.name in caller_vars:
+                # This caller var already defined.  Make them them same.
+                caller = caller_vars[term.name]
+                if not existing_arg.match_term(term):
+                    return False
+                else:
+                    pass
+            caller_vars[term.name] = var
+        elif isinstance(term, ConsTerm):
+            # Can't match a local variable to a cons term.
+            result = False
+        else:
+            raise ValueError("can't bind VarArg to unrecognised type of term ?")
         return result
 
     def __str__(self):
@@ -88,6 +126,31 @@ class ListConsArg(Arg):
 
         return result
 
+    def match_term(self, term, caller_vars, local_vars):
+        result = True
+        if isinstance(term, LiteralTerm):
+            result = isinstance(term.value, list)
+            if result:
+                result = self.head.match_term(LiteralTerm(
+                    term.value[0]), caller_vars, local_vars)
+                if result:
+                    result = self.tail.match_term(LiteralTerm(
+                        term.value[1:]), caller_vars, local_vars)
+        elif isinstance(term, VarTerm):
+            # Can't match cons to var
+            result = False
+        elif isinstance(term, ConsTerm):
+            result = isinstance(self.value, list)
+            if result:
+                result = self.head.match_term(
+                    term.head, caller_vars, local_vars)
+                if result:
+                    result = self.tail.match_term(
+                        term.tail, caller_vars, local_vars)
+        else:
+            raise ValueError("can't bind VarArg to unrecognised type of term ?")
+        return result
+
 
 class LiteralArg(Arg):
     @property
@@ -114,6 +177,28 @@ class LiteralArg(Arg):
 
         return result
 
+    def match_term(self, term, caller_vars, local_vars):
+        result = True
+        if isinstance(term, LiteralTerm):
+            result = term.value == self.value
+        elif isinstance(term, VarTerm):
+            if term.value is not None:
+                result = term.value == self.value
+            else:
+                term.value = self.value
+        elif isinstance(term, ConsTerm):
+            result = isinstance(self.value, list)
+            if result:
+                result = LiteralArg(self.value[0]).match_term(
+                    term.head, caller_vars, local_vars)
+                if result:
+                    result = LiteralArg(self.value[1:]).match_term(
+                        term.tail, caller_vars, local_vars)
+        else:
+            raise ValueError("can't bind LiteralArg to unrecognised type of term ?")
+        return result
+
+
 
 class Rule(object):
     def __init__(self, args, terms=None):
@@ -122,26 +207,33 @@ class Rule(object):
         self.args = [make_arg(this) for this in args]
         self.terms = [make_term(this) for this in terms]
 
-    def args_match_context(self, args):
-        local_bindings = {}
+    def _args_match_call(self, args):
+        local_vars = {}
+        caller_vars = {}
+        result = (local_vars, caller_vars)
         for arg, given_term in zip(self.args, args):
-            match = arg.match(given_term, local_bindings)
-            if match is None:
-                local_bindings = None
+            if not arg.match_term(given_term, caller_vars, local_vars):
+                result = (None, None)
                 break
-            local_bindings.update(match)
-        return local_bindings
+        return result
+
+    def _form_caller_result(self, result, caller_vars):
+        def var_content(name):
+            term = caller_vars[name]
+            if isinstance(term, VarTerm) and term.value is not None:
+                term = term.value
+            return term
+        return {key:var_content[key] for key in caller_vars}
 
     def possibles(self, args=None, ind=0):
         db(ind, '?TRY {}'.format(self))
-        args_context = self.args_match_context(args)
-        if args_context is None:
+        if not self._args_match_call(args, local_vars, caller_vars):
             db(ind, '\NoRuleMatch')
         else:
-            # satisfy rules recursively in turn ...
-            for result in self._satisfy_terms(self.terms, args_context, ind+2):
+            # satisfy all terms, recursively...
+            for result in self._satisfy_terms(self.terms, local_vars, ind+2):
                 db('={}'.format(result))
-                yield result
+                yield self._form_caller_result(result, caller_vars)
             db('\EndTerms')
 
     def _satisfy_terms(self, terms, context, ind=0):
@@ -149,13 +241,15 @@ class Rule(object):
             # No remaining terms: good to go.
             db(ind, '\NoTerms')
             db(ind, '=term={}'.format(context))
-            yield context
+            yield context  # return all local vars as-is
         else:
             this_term, rest_terms = terms[0], terms[1:]
             db(ind+2, 'Term {}'.format(this_term))
-            for one_possible in this_term.possibles([], context):
+            for possible in this_term.possibles([], context):
                 db(ind+4, '\term_possible={}'.format(one_possible))
-                for result in self._satisfy_terms(rest_terms, one_possible, ind+6):
+                possible_context = context.copy().update(possible)
+                for result in self._satisfy_terms(rest_terms, possible_context,
+                                                  ind+6):
                     db(ind+4, '\term_result={}'.format(result))
                     yield result
             db(ind+2, '\EndTerms')
