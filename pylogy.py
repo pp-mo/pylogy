@@ -4,7 +4,7 @@ def db(ind, str):
     if debug:
         print ' ' * ind + str
 
-class ArgOrTerm():
+class ArgOrTerm(object):
     @classmethod
     def from_spec(cls, spec):
         # Pass-through object of this class, or build from a suitable spec.
@@ -23,6 +23,15 @@ class ArgOrTerm():
     def __repr__(self):
         return str(self)
 
+    def __str__(self):
+        part_strs = ['{}={!r}'.format(
+                         part, getattr(self, part))
+                     for part in self.parts]
+        parts_str = ', '.join(part_strs)
+        if len(parts_str) > 0:
+            parts_str = ' ' + parts_str
+        name = self.__class__.__name__
+        return '<{}{}>'.format(name, parts_str)
 
 class Arg(ArgOrTerm):
     def __init__(self, spec):
@@ -34,11 +43,13 @@ class Arg(ArgOrTerm):
         raise NotImplementedError()
 
 
-class TermMatchFail(Exception):
-    pass
-
-
 class VarArg(Arg):
+    parts = ('name', 'value')
+
+    def __init__(self, spec, value=None):
+        super(VarArg, self).__init__(spec)
+        self.value = value
+
     @property
     def name(self):
         return self.spec
@@ -48,35 +59,19 @@ class VarArg(Arg):
         # A Var is denoted by any string with leading uppercase.
         return isinstance(spec, basestring) and spec[0] == spec[0].upper()
 
-    def match(self, term, existing_bindings):
-        result = None
-        if isinstance(term, LiteralTerm):
-            existing = existing_bindings.get(self.name, None)
-            if existing is None or existing == term.value:
-                result = {self.name: term.value}
-        elif isinstance(term, VarTerm):
-            if self.name in existing_bindings:
-                result = {}
-            else:
-                result = {self.name: term}
-        else:
-            raise ValueError("can't bind VarArg to unrecognised type of term ?")
-
-        return result
-
     def match_term(self, term, caller_vars, local_vars):
         result = True
         if self.name in local_vars:
-            var = local_vars_dict[name]
+            var = local_vars[self.name]
         else:
-            var = VarTerm(name)
-            local_vars_dict[name] = var
+            var = VarTerm(self.name)
+            local_vars[self.name] = var
         
         if isinstance(term, LiteralTerm):
-            if var.value is None:
-                var.value = term
+            if var.value_ref is None:
+                var.value_ref = term
             else:
-                result = var.values == term.value
+                result = var.value_ref == term.value
         elif isinstance(term, VarTerm):
             if term.name in caller_vars:
                 # This caller var already defined.  Make them them same.
@@ -93,11 +88,10 @@ class VarArg(Arg):
             raise ValueError("can't bind VarArg to unrecognised type of term ?")
         return result
 
-    def __str__(self):
-        return '<VarArg "{!s}">'.format(self.name)
-
 
 class ListConsArg(Arg):
+    parts = ('head', 'tail')
+
     def __init__(self, spec):
         self.head = make_arg(spec[0])
         self.tail = make_arg(spec[1])
@@ -106,25 +100,6 @@ class ListConsArg(Arg):
     def is_valid_spec(cls, spec):
         # A split-list spec is a ListConsArg or a pair.
         return isinstance(spec, tuple) and len(spec) == 2
-
-    def __str__(self):
-        return '<ListConsArg [{!s}|{!s}]>'.format(self.head, self.tail)
-
-    def match(self, term, existing_bindings):
-        result = None
-        if isinstance(term, LiteralTerm):
-            value = term.value
-            if isinstance(value, list):
-                head, tail = make_term(value[0]), make_term(value[1:])
-                result = self.head.match(head, existing_bindings)
-                result.update(self.tail.match(tail, existing_bindings))
-        elif isinstance(term, VarTerm):
-            # We can't match a list-split to a var (not automatically).
-            pass
-        else:
-            raise ValueError('unrecognised type of term ?')
-
-        return result
 
     def match_term(self, term, caller_vars, local_vars):
         result = True
@@ -153,6 +128,7 @@ class ListConsArg(Arg):
 
 
 class LiteralArg(Arg):
+    parts = ('value',)
     @property
     def value(self):
         return self.spec
@@ -161,21 +137,6 @@ class LiteralArg(Arg):
     def is_valid_spec(cls, spec):
         # A literal spec is anything not a List-splitter or VarArg (for now).
         return not VarArg.from_spec(spec) and not ListConsArg.from_spec(spec)
-
-    def __str__(self):
-        return '<LiteralArg {!r}>'.format(self.value)
-
-    def match(self, term, existing_bindings):
-        result = None
-        if isinstance(term, LiteralTerm):
-            if self.value == term.value:
-                result = {}
-        elif isinstance(term, VarTerm):
-            result = {term: self.value}
-        else:
-            raise ValueError('unrecognised type of term ?')
-
-        return result
 
     def match_term(self, term, caller_vars, local_vars):
         result = True
@@ -207,14 +168,15 @@ class Rule(object):
         self.args = [make_arg(this) for this in args]
         self.terms = [make_term(this) for this in terms]
 
-    def _args_match_call(self, args):
-        local_vars = {}
-        caller_vars = {}
-        result = (local_vars, caller_vars)
-        for arg, given_term in zip(self.args, args):
-            if not arg.match_term(given_term, caller_vars, local_vars):
-                result = (None, None)
-                break
+    def _args_match_call(self, args, local_vars, caller_vars):
+        if len(args) != len(self.args):
+            result = False
+        else:
+            result = True
+            for arg, given_term in zip(self.args, args):
+                if not arg.match_term(given_term, caller_vars, local_vars):
+                    result = False
+                    break
         return result
 
     def _form_caller_result(self, result, caller_vars):
@@ -227,16 +189,17 @@ class Rule(object):
 
     def possibles(self, args=None, ind=0):
         db(ind, '?TRY {}'.format(self))
+        local_vars, caller_vars = {}, {}
         if not self._args_match_call(args, local_vars, caller_vars):
             db(ind, '\NoRuleMatch')
         else:
             # satisfy all terms, recursively...
-            for result in self._satisfy_terms(self.terms, local_vars, ind+2):
-                db('={}'.format(result))
+            for result in self._satisfy_calls(self.terms, local_vars, ind+2):
+                db(ind, '={}'.format(result))
                 yield self._form_caller_result(result, caller_vars)
-            db('\EndTerms')
+            db(ind, '\EndTerms')
 
-    def _satisfy_terms(self, terms, context, ind=0):
+    def _satisfy_calls(self, terms, context, ind=0):
         if len(terms) == 0:
             # No remaining terms: good to go.
             db(ind, '\NoTerms')
@@ -248,7 +211,7 @@ class Rule(object):
             for possible in this_term.possibles([], context):
                 db(ind+4, '\term_possible={}'.format(one_possible))
                 possible_context = context.copy().update(possible)
-                for result in self._satisfy_terms(rest_terms, possible_context,
+                for result in self._satisfy_calls(rest_terms, possible_context,
                                                   ind+6):
                     db(ind+4, '\term_result={}'.format(result))
                     yield result
@@ -263,18 +226,24 @@ class Rule(object):
 class Term(ArgOrTerm):
     pass # abstract
 
-    def __repr__(self):
-        return str(self)
 
 class LiteralTerm(LiteralArg, Term):
     # Functionally equivalent, for now.
-    def __str__(self):
-        return '<LiteralTerm "{!s}">'.format(self.value)
+    pass
+
 
 class VarTerm(VarArg, Term):
+    parts = ('name', 'value_ref')
+
+    def __init__(self, spec, value=None):
+        super(VarTerm, self).__init__(spec)
+        self.value_ref = value
+
+
+class ConsTerm(ListConsArg, Term):
     # Functionally equivalent, for now.
-    def __str__(self):
-        return '<VarTerm "{!s}">'.format(self.name)
+    pass
+
 
 #class TrueTerm(Term):
 #    def possibles(self, context):
@@ -292,7 +261,7 @@ class VarTerm(VarArg, Term):
 #        return '<FalseTerm>'
 
 
-class ComplexTerm(Term):
+class CallTerm(ArgOrTerm):
     def __init__(self, pred, arg_specs):
         self.pred = pred
         self.arg_specs = [make_arg(spec) for spec in arg_specs]
@@ -419,7 +388,7 @@ def build_from_spec(spec, class_type_name, classes):
     return result
 
 def make_term(spec):
-    return build_from_spec(spec, 'term', [VarTerm, ComplexTerm, LiteralTerm])
+    return build_from_spec(spec, 'term', [VarTerm, CallTerm, LiteralTerm])
 
 def make_arg(spec):
     return build_from_spec(spec, 'arg', [VarArg, ListConsArg, LiteralArg])
@@ -440,7 +409,7 @@ print make_arg(('head', 'Tail'))
 #
 # ? uniq([1, 2, 1, 3])
 
-Call = ComplexTerm
+Call = CallTerm
 def Cons(head, tail):
     return ListConsArg((head, tail))
 
