@@ -20,6 +20,10 @@ class ArgOrTerm(object):
     def is_valid_spec(cls, spec):
         raise NotImplementedError()
 
+    def final_value(self):
+        # Result chaining for variable contents and equivalences.
+        return self
+
     def __repr__(self):
         return str(self)
 
@@ -32,6 +36,7 @@ class ArgOrTerm(object):
             parts_str = ' ' + parts_str
         name = self.__class__.__name__
         return '<{}{}>'.format(name, parts_str)
+
 
 class Arg(ArgOrTerm):
     def __init__(self, spec):
@@ -59,28 +64,44 @@ class VarArg(Arg):
         # A Var is denoted by any string with leading uppercase.
         return isinstance(spec, basestring) and spec[0] == spec[0].upper()
 
+    def final_value(self):
+        if self.value is None:
+            result = self
+        else:
+            result = self.value.final_value()
+        return result
+
+    argvar_number = 0
+
+    @classmethod
+    def _new_var(cls, name):
+        cls.argvar_number += 1
+        var = VarTerm('{}_{:03d}'.format(name, cls.argvar_number))
+        return var
+
     def match_term(self, term, caller_vars, local_vars):
         result = True
         if self.name in local_vars:
             var = local_vars[self.name]
         else:
-            var = VarTerm(self.name)
+            var = self._new_var(self.name)
             local_vars[self.name] = var
-        
+
         if isinstance(term, LiteralTerm):
-            if var.value_ref is None:
-                var.value_ref = term
+            if var.value is None:
+                var.value = term
             else:
-                result = var.value_ref == term.value
+                result = var.final_value() == term
         elif isinstance(term, VarTerm):
             if term.name in caller_vars:
-                # This caller var already defined.  Make them them same.
+                # Var defined in caller. Make them the same, if poss.
                 caller = caller_vars[term.name]
-                if not existing_arg.match_term(term):
-                    return False
+                while isinstance(caller.value, VarArg):
+                    caller = caller.value
+                if caller.value is not None:
+                    result = term.value == caller.final_value()
                 else:
-                    pass
-            caller_vars[term.name] = var
+                    caller.value = self
         elif isinstance(term, ConsTerm):
             # Can't match a local variable to a cons term.
             result = False
@@ -100,6 +121,11 @@ class ListConsArg(Arg):
     def is_valid_spec(cls, spec):
         # A split-list spec is a ListConsArg or a pair.
         return isinstance(spec, tuple) and len(spec) == 2
+
+    def final_value(self):
+        result = LiteralTerm([self.head.final_value()] + 
+                             self.tail.final_value())
+        return result
 
     def match_term(self, term, caller_vars, local_vars):
         result = True
@@ -159,6 +185,8 @@ class LiteralArg(Arg):
             raise ValueError("can't bind LiteralArg to unrecognised type of term ?")
         return result
 
+    def __eq__(self, other):
+        return self.value == other.value
 
 
 class Rule(object):
@@ -166,7 +194,7 @@ class Rule(object):
         args = args or []
         terms = terms or []
         self.args = [make_arg(this) for this in args]
-        self.terms = [make_term(this) for this in terms]
+        self.call_terms = [make_term(this) for this in terms]
 
     def _args_match_call(self, args, local_vars, caller_vars):
         if len(args) != len(self.args):
@@ -180,46 +208,45 @@ class Rule(object):
         return result
 
     def _form_caller_result(self, result, caller_vars):
-        def var_content(name):
-            term = caller_vars[name]
-            if isinstance(term, VarTerm) and term.value is not None:
-                term = term.value
-            return term
-        return {key:var_content[key] for key in caller_vars}
+        return {name:term.final_value() for name, term in caller_vars.items()}
 
     def possibles(self, args=None, ind=0):
         db(ind, '?TRY {}'.format(self))
+        db(ind, ' -of-({}) ...'.format(args))
         local_vars, caller_vars = {}, {}
         if not self._args_match_call(args, local_vars, caller_vars):
             db(ind, '\NoRuleMatch')
         else:
-            # satisfy all terms, recursively...
-            for result in self._satisfy_calls(self.terms, local_vars, ind+2):
+            # satisfy all call_terms, recursively...
+            for result in self._satisfy_call_terms(self.call_terms,
+                                                   local_vars, ind+2):
                 db(ind, '={}'.format(result))
                 yield self._form_caller_result(result, caller_vars)
             db(ind, '\EndTerms')
 
-    def _satisfy_calls(self, terms, context, ind=0):
-        if len(terms) == 0:
-            # No remaining terms: good to go.
-            db(ind, '\NoTerms')
+    def _satisfy_call_terms(self, calls, context, ind=0):
+        if len(calls) == 0:
+            # No remaining calls: good to go.
+            db(ind, '\Sat_Terms_Nomore')
             db(ind, '=term={}'.format(context))
             yield context  # return all local vars as-is
         else:
-            this_term, rest_terms = terms[0], terms[1:]
-            db(ind+2, 'Term {}'.format(this_term))
-            for possible in this_term.possibles([], context):
-                db(ind+4, '\term_possible={}'.format(one_possible))
-                possible_context = context.copy().update(possible)
-                for result in self._satisfy_calls(rest_terms, possible_context,
-                                                  ind+6):
-                    db(ind+4, '\term_result={}'.format(result))
+            this_call, rest_calls = calls[0], calls[1:]
+            db(ind+2, 'Sat_Term {}'.format(this_call))
+            for possible in this_call.possibles(context, ind+2):
+#                db(ind+4, ':term_possible={}'.format(possible))
+                possible_context = context.copy()
+                possible_context.update(possible)
+                for result in self._satisfy_call_terms(rest_calls,
+                                                       possible_context,
+                                                       ind+6):
+                    db(ind+4, ':term_result={}'.format(result))
                     yield result
             db(ind+2, '\EndTerms')
 
     def __str__(self):
         str_args = ', '.join(str(arg) for arg in self.args)
-        str_terms = ', '.join(str(term) for term in self.terms)
+        str_terms = ', '.join(str(term) for term in self.call_terms)
         return '<Rule({}): {}>'.format(str_args, str_terms)
 
 
@@ -233,11 +260,8 @@ class LiteralTerm(LiteralArg, Term):
 
 
 class VarTerm(VarArg, Term):
-    parts = ('name', 'value_ref')
-
-    def __init__(self, spec, value=None):
-        super(VarTerm, self).__init__(spec)
-        self.value_ref = value
+    # Functionally equivalent, for now.
+    pass
 
 
 class ConsTerm(ListConsArg, Term):
@@ -271,16 +295,27 @@ class CallTerm(ArgOrTerm):
         # Can't build from a spec : Use constructor instead.
         return False
 
-    def possibles(self, args, context):
-        call_context = context.copy()
+    def possibles(self, context, ind=0):
+        # Enumerate possible resolutions of this call within a context.
+        # Context is local variables, which can have values or references.
+        # Context may be updated with new (previously unseen) local variables.
         match_ok = True
-        for arg, arg_spec in zip(args, self.arg_specs):
-            match = arg_spec.match(arg)
-            if match is None:
-                match_ok = False
+        actual_args = []
+        for arg in self.arg_specs:
+            if isinstance(arg, VarArg):
+                name = arg.name
+                var = context.get(name)
+                if var is None:
+                    var = VarTerm._new_var(name)
+                    context[name] = var
+                arg_value = var.final_value()
+            elif isinstance(arg, LiteralArg):
+                arg_value = arg.final_value()
             else:
-                call_context.update(match)
-        for result in self.pred.possibles(call_context):
+                msg = 'call argument {} has unhandled type {}.'
+                raise ValueError(msg.format(arg, type(arg)))
+            actual_args.append(arg_value)
+        for result in self.pred.possibles(actual_args, ind+2):
             yield result
 
     def __str__(self):
@@ -299,9 +334,9 @@ class Pred(object):
         # TODO: allow passing existing contructed Rule ?
         self.rules.append(Rule(rule_args, rule_terms))
 
-    def possibles(self, args):
+    def possibles(self, args, ind=0):
         for rule in self.rules:
-            for result in rule.possibles(args):
+            for result in rule.possibles(args, ind+2):
                 yield result
 
     def __str__(self):
@@ -327,7 +362,7 @@ class FailPred(Pred):
     def add(self, rule):
         raise NotImplementedError()
 
-    def possibles(self, args, context):
+    def possibles(self, args, ind=0):
         # A generator that stops immediately.
         if 0:
             yield None
@@ -357,7 +392,7 @@ class NotPred(Pred):
         self.args = [VarArg('_N')]
         self.rules = []
 
-    def possibles(self, args, context):
+    def possibles(self, args, ind=0):
         inner_succeeded = False
         try:
             # See if there are any possibilities of our argument.
@@ -366,7 +401,7 @@ class NotPred(Pred):
         except StopIteration:
             pass
         if not inner_succeeded:
-            yield context
+            yield {}
 
 #    def __str__(self):
 #        str_rules = ', \n  '.join(str(rule) for rule in self.rules)
@@ -429,8 +464,16 @@ p_uniq.add((Cons('X', 'L'),),
             Call(p_uniq, ['L'])])
 
 debug = True
-for test_list in [[1, 2, 3], [1, 2, 1]]:
-    print 'test {}'.format(test_list)
-    test_args = [make_term(test_list)]
-    for result_context in p_uniq.possibles(test_args):
+test_calls = [
+    (p_inlist, [1, [1]]),
+]
+#test_calls = [
+#    (p_inlist, [2, [1, 2, 3]]),
+#]
+for test_call in test_calls:
+    print
+    print 'test {}'.format(test_call)
+    pred, args = test_call
+    args = [make_term(spec) for spec in args]
+    for result_context in pred.possibles(args):
         print '   result : ', result_context
