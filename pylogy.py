@@ -130,7 +130,8 @@ class ListConsArg(Arg):
     def match_term(self, term, caller_vars, local_vars):
         result = True
         if isinstance(term, LiteralTerm):
-            result = isinstance(term.value, list)
+            value = term.value
+            result = isinstance(value, list) and len(value) > 0
             if result:
                 result = self.head.match_term(LiteralTerm(
                     term.value[0]), caller_vars, local_vars)
@@ -244,10 +245,21 @@ class Rule(object):
                     yield result
             db(ind+2, '\EndTerms')
 
+
+    def __repr__(self):
+        return self._str(full_repr=True)
+
     def __str__(self):
+        return self._str()
+
+    def _str(self, full_repr=False):
         str_args = ', '.join(str(arg) for arg in self.args)
-        str_terms = ', '.join(str(term) for term in self.call_terms)
-        return '<Rule({}): {}>'.format(str_args, str_terms)
+        if full_repr:
+            str_terms = ', '.join(str(term) for term in self.call_terms)
+            str_terms = '[ {}]'.format(str_terms)
+        else:
+            str_terms = '...'
+        return '<Rule({}):{}>'.format(str_args, str_terms)
 
 
 class Term(ArgOrTerm):
@@ -338,6 +350,9 @@ class Pred(object):
         for rule in self.rules:
             for result in rule.possibles(args, ind+2):
                 yield result
+
+    def __repr__(self):
+        return str(self)
 
     def __str__(self):
         str_rules = ', \n  '.join(str(rule) for rule in self.rules)
